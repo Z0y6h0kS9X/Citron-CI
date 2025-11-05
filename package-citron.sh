@@ -53,22 +53,30 @@ mv -v "${SOURCE_APPIMAGE}" "${OUTNAME_APPIMAGE}"
 mv -v "${SOURCE_APPIMAGE}.zsync" "${OUTNAME_APPIMAGE}.zsync"
 
 # --- Create citron-room Server Package ---
-echo "Creating citron-room server package..."
-mkdir -p ./room_server_pkg
+echo "Creating self-contained citron-room server package..."
+mkdir -p ./room_server_pkg/lib
 
-# Copy binaries from the install location
+# Copy the main binaries into the package directory
 cp /usr/bin/citron-room ./room_server_pkg/
 cp /usr/bin/citron-cmd ./room_server_pkg/
 
-# Create a helper script for users, as seen in the original workflow's release notes
+# Find all non-system library dependencies for both binaries and copy them into the package
+DEPS=$(ldd /usr/bin/citron-room /usr/bin/citron-cmd | grep '=> /usr/lib' | awk '{print $3}' | sort -u)
+echo "Bundling required libraries:"
+echo "$DEPS"
+for DEP in $DEPS; do
+    cp "$DEP" ./room_server_pkg/lib/
+done
+
+# Create a new start-server.sh that sets the library path before running
 echo '#!/bin/sh' > ./room_server_pkg/start-server.sh
-echo '# This script starts the citron-room server.' >> ./room_server_pkg/start-server.sh
-echo '# All arguments passed to this script will be forwarded to citron-room.' >> ./room_server_pkg/start-server.sh
+echo '# This script starts the citron-room server and ensures it can find its bundled libraries.' >> ./room_server_pkg/start-server.sh
 echo 'DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"' >> ./room_server_pkg/start-server.sh
+echo 'export LD_LIBRARY_PATH="$DIR/lib:$LD_LIBRARY_PATH"' >> ./room_server_pkg/start-server.sh
 echo '"$DIR/citron-room" "$@"' >> ./room_server_pkg/start-server.sh
 chmod +x ./room_server_pkg/start-server.sh
 
-# Create the tarball
+# Create the final tarball
 tar -czvf "${OUTNAME_ROOM_SERVER}" -C ./room_server_pkg .
 echo "Successfully created ${OUTNAME_ROOM_SERVER}"
 
