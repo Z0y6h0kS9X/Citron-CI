@@ -110,7 +110,6 @@ jobs:
           mv get-dependencies.sh emulator/
           mv build-citron.sh emulator/
           mv package-citron.sh emulator/
-          mv build-citron-room.sh emulator/
 
       - name: Add Git Safe Directory
         working-directory: ./emulator
@@ -127,12 +126,6 @@ jobs:
           JOBS_VAL=$((NPROC_VAL > 4 ? 4 : NPROC_VAL))
           chmod +x ./build-citron.sh
           JOBS=${JOBS_VAL} DEVEL=true ./build-citron.sh ${{ matrix.build_arg }}
-
-      - name: Build and Package citron-room Server
-        working-directory: ./emulator
-        run: |
-          chmod +x ./build-citron-room.sh
-          ./build-citron-room.sh "${{ matrix.arch_suffix }}"
 
       - name: Package AppImage with Correct Name
         working-directory: ./emulator
@@ -201,7 +194,6 @@ jobs:
             *.AppImage*
             *.tar.zst
             citron-room-server*.tar.gz
-            citron-room-server*.zip
           body: |
             **Citron Upstream Commit:** [`${{ needs.check-version.outputs.new_hash }}`](https://git.citron-emu.org/Citron/Emulator/commit/${{ needs.check-version.outputs.new_hash_full }})
 
@@ -244,4 +236,3 @@ jobs:
           curl -H "Content-Type: application/json" \
                -d "{\"content\":\"🐧 **New Linux Build Available!**\n\n📦 **Version:** \`${{ steps.version.outputs.sha }}\`\n📅 **Date:** ${DATE}\n🔗 **Download:** $DOWNLOAD_URL\n\n✨ Includes x86_64, x86_64_v3 builds + **citron-room dedicated server**!\"}" \
                "$WEBHOOK_URL"
-
