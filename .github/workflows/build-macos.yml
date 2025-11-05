@@ -125,7 +125,7 @@ jobs:
           # Step 1: Run macdeployqt to copy initial frameworks.
           "$MACDEPLOYQT_PATH" "$APP_BUNDLE_PATH" -verbose=1
 
-          # Step 2: Exhaustively find, copy, and relink all non-system dependencies.
+          # Step 2: Find, copy, and relink all non-system dependencies.
           FRAMEWORKS_PATH="$APP_BUNDLE_PATH/Contents/Frameworks"
           HOMEBREW_PREFIX=$(brew --prefix)
           
@@ -152,7 +152,9 @@ jobs:
               dep_name=$(basename "$original_dep_path")
               if [[ "$dep_name" == "$(basename "$file_to_process")" ]]; then continue; fi
               
+              # This uses -L to follow symlinks, guaranteeing it finds files in /Cellar.
               real_path=$(find -L "$HOMEBREW_PREFIX" -name "$dep_name" -type f -print -quit)
+
               if [ -n "$real_path" ]; then
                 if [ ! -f "$FRAMEWORKS_PATH/$dep_name" ]; then
                   echo "Found and copying MISSING dependency '$dep_name' from '$real_path'"
@@ -166,8 +168,6 @@ jobs:
                   echo "Rewriting reference: '$original_dep_path' -> '$new_ref' in $(basename "$file_to_process")"
                   install_name_tool -change "$original_dep_path" "$new_ref" "$file_to_process"
                 fi
-              else
-                echo "::warning::Could not find '$dep_name' in '$HOMEBREW_PREFIX'. Assuming it's a Qt framework or already handled."
               fi
             done
           done
@@ -175,12 +175,12 @@ jobs:
 
           # Step 3: Remove all existing signatures before applying a new, consistent one.
           echo "--- Removing all existing signatures to ensure consistency ---"
-          while IFS= read -r -d '' file; do
+          find "$APP_BUNDLE_PATH" -type f -print0 | while IFS= read -r -d '' file; do
             if file "$file" | grep -q "Mach-O"; then
               echo "Removing signature from $(basename "$file")"
               codesign --remove-signature "$file" 2>/dev/null || true
             fi
-          done < <(find "$APP_BUNDLE_PATH" -type f -print0)
+          done
           
           # Step 4: Apply the final, consistent ad-hoc signature to the entire bundle.
           echo "Applying final, consistent ad-hoc signature..."
