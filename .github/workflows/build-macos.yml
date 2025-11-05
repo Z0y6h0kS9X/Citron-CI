@@ -68,7 +68,7 @@ jobs:
 
       - name: Install System Dependencies via Homebrew
         run: |
-          brew install ninja boost catch2 cmake enet fmt ffmpeg glslang hidapi libvpx lld llvm mbedtls nasm nlohmann-json openal-soft sdl2 molten-vk vulkan-headers vulkan-loader webp libb2
+          brew install ninja boost catch2 cmake enet fmt ffmpeg glslang hidapi libvpx lld llvm mbedtls nasm nlohmann-json openal-soft sdl2 molten-vk vulkan-headers vulkan-loader webp libb2 bzip2
 
       - name: Clone Citron Source
         run: git clone --recursive "https://git.citron-emu.org/Citron/Emulator.git" citron
@@ -81,33 +81,29 @@ jobs:
           sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' citron/src/citron_cmd/CMakeLists.txt
           echo "--- Applied macOS compatibility patches ---"
 
-          # Patch 2: Force Static Linking in Root CMakeLists.txt
+          # Patch 2: The SINGLE robust patch for static linking in the root CMakeLists.txt
           sed -i.bak '
-          /find_package(Boost 1.79.0 REQUIRED COMPONENTS context/i\
-          # --- Injected by CI to test static linking ---\
+          # Find the end of the if(APPLE) block that defines PLATFORM_LIBRARIES
+          /set(PLATFORM_LIBRARIES \${COCOA_LIBRARY} \${IOKIT_LIBRARY} \${COREVIDEO_LIBRARY})/a\
+          \
+          # --- Injected by CI to force static linking and add transitive dependencies ---\
           message(STATUS "CI PATCH: Forcing static linking for non-Qt dependencies.")\
-          set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ${CMAKE_FIND_LIBRARY_SUFFIXES})\
+          set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" \${CMAKE_FIND_LIBRARY_SUFFIXES})\
           set(Boost_USE_STATIC_LIBS ON)\
+          \
+          message(STATUS "CI PATCH: Finding required transitive dependencies for static linking...")\
           find_package(BZip2 REQUIRED)\
           find_package(Iconv REQUIRED)\
-          # --- End of CI patch ---\
           \
+          message(STATUS "CI PATCH: Appending transitive dependencies to PLATFORM_LIBRARIES...")\
+          list(APPEND PLATFORM_LIBRARIES\
+              "VideoToolbox" "CoreMedia" "CoreFoundation" "CoreImage"\
+              "Security" "SystemConfiguration" "GSS"\
+              \${BZIP2_LIBRARIES} \${ICONV_LIBRARIES} ZLIB::ZLIB\
+          )\
+          # --- End of CI patch ---
           ' citron/CMakeLists.txt
           echo "--- Patched main CMakeLists.txt for static linking ---"
-
-          # Patch 3: Append Missing Transitive Libraries using a robust echo command
-          cat <<EOT >> citron/src/citron/CMakeLists.txt
-          # --- Injected by CI to link missing static dependencies ---
-          if(APPLE)
-              target_link_libraries(citron PRIVATE
-                  "VideoToolbox" "CoreMedia" "CoreFoundation" "CoreImage"
-                  "Security" "SystemConfiguration" "GSS"
-                  \${BZIP2_LIBRARIES} \${ICONV_LIBRARIES} ZLIB::ZLIB
-              )
-          endif()
-          # --- End of CI patch ---
-          EOT
-          echo "--- Patched src/citron/CMakeLists.txt to add missing linker dependencies ---"
 
       - name: Get Nightly Version
         id: version
@@ -149,7 +145,7 @@ jobs:
           MACDEPLOYQT_PATH=$(find "$PWD/citron" -name "macdeployqt" -type f | head -n 1)
           echo "Found macdeployqt at: $MACDEPLOYQT_PATH"
 
-          # Step 1: Run macdeployqt to bundle the Qt frameworks and plugins.
+          # Step 1: Run macdeployqt.
           echo "--- Running macdeployqt ---"
           "$MACDEPLOYQT_PATH" "$APP_BUNDLE_PATH" -verbose=1
 
