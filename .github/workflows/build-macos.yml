@@ -68,20 +68,20 @@ jobs:
 
       - name: Install System Dependencies via Homebrew
         run: |
-          brew install ninja boost catch2 cmake enet fmt ffmpeg glslang hidapi libvpx lld llvm mbedtls nasm nlohmann-json openal-soft sdl2 molten-vk vulkan-headers vulkan-loader webp
+          brew install ninja boost catch2 cmake enet fmt ffmpeg glslang hidapi libvpx lld llvm mbedtls nasm nlohmann-json openal-soft sdl2 molten-vk vulkan-headers vulkan-loader webp libb2
 
       - name: Clone Citron Source
         run: git clone --recursive "https://git.citron-emu.org/Citron/Emulator.git" citron
 
-      - name: Patch CMakeLists for macOS Compatibility
-        working-directory: ./citron
+      - name: Apply Build Patches
         run: |
-          sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' src/dedicated_room/CMakeLists.txt
-          sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' src/citron/CMakeLists.txt
-          sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' src/citron_cmd/CMakeLists.txt
+          # Patch 1: macOS Compatibility
+          sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' citron/src/dedicated_room/CMakeLists.txt
+          sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' citron/src/citron/CMakeLists.txt
+          sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' citron/src/citron_cmd/CMakeLists.txt
+          echo "--- Applied macOS compatibility patches ---"
 
-      - name: Apply Static Linking Patch
-        run: |
+          # Patch 2: Force Static Linking
           sed -i.bak '
           /find_package(Boost 1.79.0 REQUIRED COMPONENTS context/i\
           # --- Injected by CI to test static linking ---\
@@ -91,7 +91,25 @@ jobs:
           # --- End of CI patch ---\
           \
           ' citron/CMakeLists.txt
-          echo "--- Patched CMakeLists.txt successfully ---"
+          echo "--- Patched main CMakeLists.txt for static linking ---"
+
+          # Patch 3: Add Missing Transitive Libraries for Static Linking
+          sed -i.bak '
+          /target_link_libraries(citron PRIVATE/a\
+              # --- Injected by CI to fix static linking ---\
+              -framework VideoToolbox\
+              -framework CoreMedia\
+              -framework CoreFoundation\
+              -framework Security\
+              -framework CoreImage\
+              -framework SystemConfiguration\
+              -framework GSS\
+              ${ZLIB_LIBRARIES}\
+              ${BZIP2_LIBRARIES}\
+              ${LIBICONV_LIBRARIES}\
+              # --- End of CI patch ---\
+          ' citron/src/citron/CMakeLists.txt
+          echo "--- Patched src/citron/CMakeLists.txt to add missing linker dependencies ---"
 
       - name: Get Nightly Version
         id: version
@@ -119,7 +137,7 @@ jobs:
             -DUSE_DISCORD_PRESENCE=ON \
             -DENABLE_WEB_SERVICE=ON \
             -DENABLE_OPENSSL=ON \
-            -DCITRON_USE_AUTO_UPDATER=OFF
+            -DCITRON_USE_AUTO_UPDATER=ON
 
       - name: Build Citron
         working-directory: ./citron
@@ -143,27 +161,17 @@ jobs:
 
           # Step 3: Perform a robust, manual, inside-out ad-hoc signing process.
           echo "--- Applying ad-hoc signatures ---"
-          # 3a. Remove any existing signatures to prevent conflicts.
-          echo "Removing existing signatures..."
           find "$APP_BUNDLE_PATH" -type f \( -name "*.dylib" -o -name "*.framework" \) -exec codesign --remove-signature {} \; 2>/dev/null || true
-          
-          # 3b. Sign all frameworks and libraries first.
           echo "Signing frameworks and libraries..."
           find "$APP_BUNDLE_PATH/Contents/Frameworks" -type f \( -name "*.dylib" -o -name "*.framework" \) -exec codesign --force --sign - {} \;
-
-          # 3c. Sign all plugins.
           echo "Signing plugins..."
           find "$APP_BUNDLE_PATH/Contents/PlugIns" -type f -name "*.dylib" -exec codesign --force --sign - {} \;
-
-          # 3d. Sign the main executable.
           echo "Signing main executable..."
           codesign --force --sign - "$APP_BUNDLE_PATH/Contents/MacOS/citron"
-
-          # 3e. Sign the entire application bundle to seal it.
           echo "Signing the application bundle..."
           codesign --force --deep --sign - "$APP_BUNDLE_PATH"
           
-          # Step 4: Verify the final signature. This must pass.
+          # Step 4: Verify the final signature.
           echo "--- Verifying final signature ---"
           codesign -vvv --deep --strict "$APP_BUNDLE_PATH"
 
