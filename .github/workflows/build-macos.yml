@@ -122,10 +122,10 @@ jobs:
           MACDEPLOYQT_PATH=$(find "$PWD/citron" -name "macdeployqt" -type f | head -n 1)
           echo "Found macdeployqt at: $MACDEPLOYQT_PATH"
 
-          # Step 1: Run macdeployqt to copy initial frameworks.
+          # Step 1: Run macdeployqt.
           "$MACDEPLOYQT_PATH" "$APP_BUNDLE_PATH" -verbose=1
 
-          # Step 2: Find, copy, and relink all non-system dependencies.
+          # Step 2: Exhaustively find, copy, and relink all non-system dependencies.
           FRAMEWORKS_PATH="$APP_BUNDLE_PATH/Contents/Frameworks"
           HOMEBREW_PREFIX=$(brew --prefix)
           
@@ -152,9 +152,7 @@ jobs:
               dep_name=$(basename "$original_dep_path")
               if [[ "$dep_name" == "$(basename "$file_to_process")" ]]; then continue; fi
               
-              # This uses -L to follow symlinks, guaranteeing it finds files in /Cellar.
               real_path=$(find -L "$HOMEBREW_PREFIX" -name "$dep_name" -type f -print -quit)
-
               if [ -n "$real_path" ]; then
                 if [ ! -f "$FRAMEWORKS_PATH/$dep_name" ]; then
                   echo "Found and copying MISSING dependency '$dep_name' from '$real_path'"
@@ -173,7 +171,16 @@ jobs:
           done
           echo "--- Audit Complete. ---"
 
-          # Step 3: Remove all existing signatures before applying a new, consistent one.
+          # Step 3: Final Verification Report
+          echo "--- FINAL VERIFICATION REPORT ---"
+          while IFS= read -r -d '' file; do
+            if file "$file" | grep -q "Mach-O"; then
+              echo "--- Dependencies for $(basename "$file") ---"
+              otool -L "$file"
+            fi
+          done < <(find "$APP_BUNDLE_PATH" -type f -print0)
+
+          # Step 4: Remove all existing signatures.
           echo "--- Removing all existing signatures to ensure consistency ---"
           find "$APP_BUNDLE_PATH" -type f -print0 | while IFS= read -r -d '' file; do
             if file "$file" | grep -q "Mach-O"; then
@@ -182,11 +189,11 @@ jobs:
             fi
           done
           
-          # Step 4: Apply the final, consistent ad-hoc signature to the entire bundle.
+          # Step 5: Apply the final, consistent ad-hoc signature.
           echo "Applying final, consistent ad-hoc signature..."
           codesign --force --deep --options=runtime -s - "$APP_BUNDLE_PATH"
 
-          # Step 5: Create the final DMG.
+          # Step 6: Create the final DMG.
           echo "Creating final DMG..."
           mkdir -p dist
           DMG_FILENAME="Citron-macOS-nightly-${{ steps.version.outputs.VERSION }}.dmg"
