@@ -161,7 +161,7 @@ jobs:
               dep_name=$(basename "$original_dep_path")
               if [[ "$dep_name" == "$(basename "$file_to_process")" ]]; then continue; fi
 
-              real_path=$(find "$HOMEBREW_PREFIX" -name "$dep_name" -type f -print -quit)
+              real_path=$(find -L "$HOMEBREW_PREFIX" -name "$dep_name" -type f -print -quit)
 
               if [ -n "$real_path" ]; then
                 # If the dependency is NOT in the bundle, copy it and add it to the audit list.
