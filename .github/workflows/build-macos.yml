@@ -81,33 +81,37 @@ jobs:
           sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' citron/src/citron_cmd/CMakeLists.txt
           echo "--- Applied macOS compatibility patches ---"
 
-          # Patch 2: Force Static Linking
+          # Patch 2: Force Static Linking in Root CMakeLists.txt
           sed -i.bak '
           /find_package(Boost 1.79.0 REQUIRED COMPONENTS context/i\
           # --- Injected by CI to test static linking ---\
           message(STATUS "CI PATCH: Forcing static linking for non-Qt dependencies.")\
           set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ${CMAKE_FIND_LIBRARY_SUFFIXES})\
           set(Boost_USE_STATIC_LIBS ON)\
+          find_package(BZip2 REQUIRED)\
+          find_package(Iconv REQUIRED)\
           # --- End of CI patch ---\
           \
           ' citron/CMakeLists.txt
           echo "--- Patched main CMakeLists.txt for static linking ---"
 
-          # Patch 3: Add Missing Transitive Libraries for Static Linking
+          # Patch 3: Add Missing Transitive Libraries in src/citron/CMakeLists.txt
           sed -i.bak '
-          /target_link_libraries(citron PRIVATE/a\
-              # --- Injected by CI to fix static linking ---\
-              -framework VideoToolbox\
-              -framework CoreMedia\
-              -framework CoreFoundation\
-              -framework Security\
-              -framework CoreImage\
-              -framework SystemConfiguration\
-              -framework GSS\
-              ${ZLIB_LIBRARIES}\
-              ${BZIP2_LIBRARIES}\
-              ${LIBICONV_LIBRARIES}\
-              # --- End of CI patch ---\
+          /target_link_libraries(citron PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)/a\
+              # --- Injected by CI to link missing static dependencies ---\
+              target_link_libraries(citron PRIVATE\
+                  "VideoToolbox"\
+                  "CoreMedia"\
+                  "CoreFoundation"\
+                  "CoreImage"\
+                  "Security"\
+                  "SystemConfiguration"\
+                  "GSS"\
+                  BZip2::bz2\
+                  Iconv::Iconv\
+                  ZLIB::ZLIB\
+              )\
+              # --- End of CI patch ---
           ' citron/src/citron/CMakeLists.txt
           echo "--- Patched src/citron/CMakeLists.txt to add missing linker dependencies ---"
 
