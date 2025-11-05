@@ -95,24 +95,18 @@ jobs:
           ' citron/CMakeLists.txt
           echo "--- Patched main CMakeLists.txt for static linking ---"
 
-          # Patch 3: Add Missing Transitive Libraries in src/citron/CMakeLists.txt
-          sed -i.bak '
-          /target_link_libraries(citron PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)/a\
-              # --- Injected by CI to link missing static dependencies ---\
-              target_link_libraries(citron PRIVATE\
-                  "VideoToolbox"\
-                  "CoreMedia"\
-                  "CoreFoundation"\
-                  "CoreImage"\
-                  "Security"\
-                  "SystemConfiguration"\
-                  "GSS"\
-                  ${BZIP2_LIBRARIES}\
-                  ${ICONV_LIBRARIES}\
-                  ZLIB::ZLIB\
-              )\
-              # --- End of CI patch ---
-          ' citron/src/citron/CMakeLists.txt
+          # Patch 3: Append Missing Transitive Libraries using a robust echo command
+          cat <<EOT >> citron/src/citron/CMakeLists.txt
+          # --- Injected by CI to link missing static dependencies ---
+          if(APPLE)
+              target_link_libraries(citron PRIVATE
+                  "VideoToolbox" "CoreMedia" "CoreFoundation" "CoreImage"
+                  "Security" "SystemConfiguration" "GSS"
+                  \${BZIP2_LIBRARIES} \${ICONV_LIBRARIES} ZLIB::ZLIB
+              )
+          endif()
+          # --- End of CI patch ---
+          EOT
           echo "--- Patched src/citron/CMakeLists.txt to add missing linker dependencies ---"
 
       - name: Get Nightly Version
