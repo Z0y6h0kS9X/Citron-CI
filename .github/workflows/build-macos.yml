@@ -123,10 +123,8 @@ jobs:
           # Step 1: Run macdeployqt to handle all Qt-related dependencies.
           "$MACDEPLOYQT_PATH" "$APP_BUNDLE_PATH" -verbose=1
 
-          # Step 2: Add RPATH to the main executable to find bundled frameworks.
-          install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BUNDLE_PATH/Contents/MacOS/citron"
-
-          # Step 3: Iteratively find, copy, and fix all non-Qt, non-system dependencies.
+          # Step 2: Iteratively find, copy, and fix all non-Qt, non-system dependencies.
+          echo "--- Auditing for non-Qt Homebrew dependencies ---"
           FRAMEWORKS_PATH="$APP_BUNDLE_PATH/Contents/Frameworks"
           while : ; do
             new_deps_found=0
@@ -154,7 +152,7 @@ jobs:
           done
           echo "--- All transitive dependencies copied. ---"
 
-          # Step 4: Rewrite all Homebrew dependency paths to use @rpath.
+          # Step 3: Rewrite all Homebrew dependency paths to use @rpath.
           echo "--- Rewriting dependency paths ---"
           mach_o_files=()
           while IFS= read -r -d '' file; do
@@ -171,7 +169,7 @@ jobs:
           done
           echo "--- All dependency paths rewritten. ---"
 
-          # Step 5: Perform a clean, bottom-up ad-hoc signing.
+          # Step 4: Perform a clean, bottom-up ad-hoc signing.
           echo "--- Applying ad-hoc signatures ---"
           find "$APP_BUNDLE_PATH" -type f -print0 | while IFS= read -r -d '' file; do
             if file "$file" | grep -q "Mach-O"; then
@@ -181,7 +179,7 @@ jobs:
           done
           codesign --force --deep --options=runtime -s - "$APP_BUNDLE_PATH"
 
-          # Step 6: Verify final bundle and create DMG.
+          # Step 5: Verify final bundle and create DMG.
           echo "--- Verifying final signature ---"
           codesign -vvv --deep --strict "$APP_BUNDLE_PATH"
           echo "Creating final DMG..."
