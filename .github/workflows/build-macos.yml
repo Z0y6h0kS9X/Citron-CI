@@ -80,7 +80,6 @@ jobs:
           sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' src/citron/CMakeLists.txt
           sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' src/citron_cmd/CMakeLists.txt
 
-      # injects the static linking logic directly into the CMakeLists.txt file.
       - name: Apply Static Linking Patch
         run: |
           sed -i.bak '
@@ -107,7 +106,6 @@ jobs:
         run: |
           OPENAL_DIR="$(brew --prefix openal-soft)"
           BREW_PREFIX="$(brew --prefix)"
-          # NOTE: Removed '-DBoost_USE_STATIC_LIBS=ON' because it's now handled by the patch above.
           cmake -B build -S . -G "Ninja" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
             -DCITRON_USE_FASTER_LD=OFF \
@@ -115,7 +113,6 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCITRON_USE_BUNDLED_VCPKG=OFF \
-            -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
             -DENABLE_QT6=ON \
             -DCITRON_ENABLE_LTO=ON \
             -DCITRON_TESTS=OFF \
@@ -128,7 +125,7 @@ jobs:
         working-directory: ./citron
         run: cmake --build build --config Release
 
-      - name: Package, Verify, and Bundle
+      - name: Package, Sign, and Bundle
         run: |
           set -e
           APP_BUNDLE_PATH=$(find citron/build -name "citron.app" | head -n 1)
@@ -136,20 +133,41 @@ jobs:
           MACDEPLOYQT_PATH=$(find "$PWD/citron" -name "macdeployqt" -type f | head -n 1)
           echo "Found macdeployqt at: $MACDEPLOYQT_PATH"
 
-          # Step 1: Run macdeployqt. This is still needed to bundle the Qt frameworks.
+          # Step 1: Run macdeployqt to bundle the Qt frameworks and plugins.
           echo "--- Running macdeployqt ---"
           "$MACDEPLOYQT_PATH" "$APP_BUNDLE_PATH" -verbose=1
 
           # Step 2: VERIFY that static linking worked.
-          # The output here should show NO links to /opt/homebrew/. This is the proof.
           echo "--- FINAL LINKAGE VERIFICATION ---"
           otool -L "$APP_BUNDLE_PATH/Contents/MacOS/citron"
 
-          # Step 3: Sign the application bundle.
-          echo "--- Applying final ad-hoc signature ---"
-          codesign --deep --force --verify --verbose --sign - "$APP_BUNDLE_PATH"
+          # Step 3: Perform a robust, manual, inside-out ad-hoc signing process.
+          echo "--- Applying ad-hoc signatures ---"
+          # 3a. Remove any existing signatures to prevent conflicts.
+          echo "Removing existing signatures..."
+          find "$APP_BUNDLE_PATH" -type f \( -name "*.dylib" -o -name "*.framework" \) -exec codesign --remove-signature {} \; 2>/dev/null || true
+          
+          # 3b. Sign all frameworks and libraries first.
+          echo "Signing frameworks and libraries..."
+          find "$APP_BUNDLE_PATH/Contents/Frameworks" -type f \( -name "*.dylib" -o -name "*.framework" \) -exec codesign --force --sign - {} \;
 
-          # Step 4: Create the final DMG.
+          # 3c. Sign all plugins.
+          echo "Signing plugins..."
+          find "$APP_BUNDLE_PATH/Contents/PlugIns" -type f -name "*.dylib" -exec codesign --force --sign - {} \;
+
+          # 3d. Sign the main executable.
+          echo "Signing main executable..."
+          codesign --force --sign - "$APP_BUNDLE_PATH/Contents/MacOS/citron"
+
+          # 3e. Sign the entire application bundle to seal it.
+          echo "Signing the application bundle..."
+          codesign --force --deep --sign - "$APP_BUNDLE_PATH"
+          
+          # Step 4: Verify the final signature. This must pass.
+          echo "--- Verifying final signature ---"
+          codesign -vvv --deep --strict "$APP_BUNDLE_PATH"
+
+          # Step 5: Create the final DMG.
           echo "--- Creating final DMG ---"
           mkdir -p dist
           DMG_FILENAME="Citron-macOS-nightly-${{ steps.version.outputs.VERSION }}.dmg"
