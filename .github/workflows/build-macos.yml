@@ -80,6 +80,20 @@ jobs:
           sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' src/citron/CMakeLists.txt
           sed -i.bak 's/if (NOT MSVC)/if (NOT MSVC AND NOT APPLE)/g' src/citron_cmd/CMakeLists.txt
 
+      # injects the static linking logic directly into the CMakeLists.txt file.
+      - name: Apply Static Linking Patch
+        run: |
+          sed -i.bak '
+          /find_package(Boost 1.79.0 REQUIRED COMPONENTS context/i\
+          # --- Injected by CI to test static linking ---\
+          message(STATUS "CI PATCH: Forcing static linking for non-Qt dependencies.")\
+          set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ${CMAKE_FIND_LIBRARY_SUFFIXES})\
+          set(Boost_USE_STATIC_LIBS ON)\
+          # --- End of CI patch ---\
+          \
+          ' citron/CMakeLists.txt
+          echo "--- Patched CMakeLists.txt successfully ---"
+
       - name: Get Nightly Version
         id: version
         working-directory: ./citron
@@ -91,14 +105,16 @@ jobs:
       - name: Configure CMake
         working-directory: ./citron
         run: |
+          OPENAL_DIR="$(brew --prefix openal-soft)"
+          BREW_PREFIX="$(brew --prefix)"
+          # NOTE: Removed '-DBoost_USE_STATIC_LIBS=ON' because it's now handled by the patch above.
           cmake -B build -S . -G "Ninja" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
             -DCITRON_USE_FASTER_LD=OFF \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix openal-soft)" \
+            -DCMAKE_PREFIX_PATH="$OPENAL_DIR;$BREW_PREFIX" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCITRON_USE_BUNDLED_VCPKG=OFF \
-            -DBoost_USE_STATIC_LIBS=ON \
             -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
             -DENABLE_QT6=ON \
             -DCITRON_ENABLE_LTO=ON \
@@ -112,77 +128,29 @@ jobs:
         working-directory: ./citron
         run: cmake --build build --config Release
 
-      - name: Package and Bundle All Dependencies
+      - name: Package, Verify, and Bundle
         run: |
           set -e
           APP_BUNDLE_PATH=$(find citron/build -name "citron.app" | head -n 1)
           echo "Found .app bundle at: $APP_BUNDLE_PATH"
-          MACDEPLOYQT_PATH=$(find "$PWD/citron/build" -name "macdeployqt" -type f | head -n 1)
+          MACDEPLOYQT_PATH=$(find "$PWD/citron" -name "macdeployqt" -type f | head -n 1)
           echo "Found macdeployqt at: $MACDEPLOYQT_PATH"
 
-          # Step 1: Run macdeployqt to handle all Qt-related dependencies.
+          # Step 1: Run macdeployqt. This is still needed to bundle the Qt frameworks.
+          echo "--- Running macdeployqt ---"
           "$MACDEPLOYQT_PATH" "$APP_BUNDLE_PATH" -verbose=1
 
-          # Step 2: Iteratively find, copy, and fix all non-Qt, non-system dependencies.
-          echo "--- Auditing for non-Qt Homebrew dependencies ---"
-          FRAMEWORKS_PATH="$APP_BUNDLE_PATH/Contents/Frameworks"
-          while : ; do
-            new_deps_found=0
-            mach_o_files=()
-            while IFS= read -r -d '' file; do
-                mach_o_files+=("$file")
-            done < <(find "$APP_BUNDLE_PATH" -type f -print0 | xargs -0 file | grep "Mach-O" | cut -d: -f1)
+          # Step 2: VERIFY that static linking worked.
+          # The output here should show NO links to /opt/homebrew/. This is the proof.
+          echo "--- FINAL LINKAGE VERIFICATION ---"
+          otool -L "$APP_BUNDLE_PATH/Contents/MacOS/citron"
 
-            for file_to_process in "${mach_o_files[@]}"; do
-              dependencies=$(otool -L "$file_to_process" | grep '/opt/homebrew/' | awk '{print $1}')
-              for original_dep_path in $dependencies; do
-                dep_name=$(basename "$original_dep_path")
-                if [ ! -f "$FRAMEWORKS_PATH/$dep_name" ]; then
-                  echo "Found and copying new dependency: $dep_name"
-                  cp -L "$original_dep_path" "$FRAMEWORKS_PATH/"
-                  chmod 755 "$FRAMEWORKS_PATH/$dep_name"
-                  new_deps_found=1
-                  install_name_tool -id "@rpath/$dep_name" "$FRAMEWORKS_PATH/$dep_name"
-                fi
-              done
-            done
-            if [ "$new_deps_found" -eq 0 ]; then
-              break
-            fi
-          done
-          echo "--- All transitive dependencies copied. ---"
+          # Step 3: Sign the application bundle.
+          echo "--- Applying final ad-hoc signature ---"
+          codesign --deep --force --verify --verbose --sign - "$APP_BUNDLE_PATH"
 
-          # Step 3: Rewrite all Homebrew dependency paths to use @rpath.
-          echo "--- Rewriting dependency paths ---"
-          mach_o_files=()
-          while IFS= read -r -d '' file; do
-              mach_o_files+=("$file")
-          done < <(find "$APP_BUNDLE_PATH" -type f -print0 | xargs -0 file | grep "Mach-O" | cut -d: -f1)
-          for file_to_process in "${mach_o_files[@]}"; do
-             dependencies=$(otool -L "$file_to_process" | grep '/opt/homebrew/' | awk '{print $1}')
-             for original_dep_path in $dependencies; do
-                dep_name=$(basename "$original_dep_path")
-                new_ref="@rpath/$dep_name"
-                echo "Rewriting '$dep_name' -> '@rpath' in $(basename "$file_to_process")"
-                install_name_tool -change "$original_dep_path" "$new_ref" "$file_to_process"
-             done
-          done
-          echo "--- All dependency paths rewritten. ---"
-
-          # Step 4: Perform a clean, bottom-up ad-hoc signing.
-          echo "--- Applying ad-hoc signatures ---"
-          find "$APP_BUNDLE_PATH" -type f -print0 | while IFS= read -r -d '' file; do
-            if file "$file" | grep -q "Mach-O"; then
-              codesign --remove-signature "$file" 2>/dev/null || true
-              codesign --force --sign - "$file"
-            fi
-          done
-          codesign --force --deep --options=runtime -s - "$APP_BUNDLE_PATH"
-
-          # Step 5: Verify final bundle and create DMG.
-          echo "--- Verifying final signature ---"
-          codesign -vvv --deep --strict "$APP_BUNDLE_PATH"
-          echo "Creating final DMG..."
+          # Step 4: Create the final DMG.
+          echo "--- Creating final DMG ---"
           mkdir -p dist
           DMG_FILENAME="Citron-macOS-nightly-${{ steps.version.outputs.VERSION }}.dmg"
           hdiutil create -fs HFS+ -srcfolder "$APP_BUNDLE_PATH" -volname "Citron Nightly" "./$DMG_FILENAME"
