@@ -36,7 +36,7 @@ jobs:
       - name: Check if release exists
         id: release_check
         run: |
-          if gh release view nightly-macos --repo "${{ github.repository }}" > /dev/null 2>&1; then
+          if gh release view nightly-macos --repo "${{ github.repository }}" > /dev/null 2>/dev/1; then
             echo "exists=true" >> $GITHUB_OUTPUT
           else
             echo "exists=false" >> $GITHUB_OUTPUT
@@ -115,10 +115,9 @@ jobs:
         working-directory: ./citron
         run: cmake --build build --config Release
 
-      - name: Package macOS Build
+      - name: Package and Bundle All Dependencies
         run: |
           set -e
-          mkdir -p dist
           APP_BUNDLE_PATH=$(find citron/build -name "citron.app" | head -n 1)
           echo "Found .app bundle at: $APP_BUNDLE_PATH"
           
@@ -132,11 +131,13 @@ jobs:
           FRAMEWORKS_PATH="$APP_BUNDLE_PATH/Contents/Frameworks"
           HOMEBREW_PREFIX=$(brew --prefix)
           
-          # 1. Create the master "To-Do List" of all binaries in the app bundle.
+          # 1. Create the master "To-Do List" using a robust method.
           files_to_process=()
-          while IFS= read -r -d $'\0' file; do
-              files_to_process+=("$file")
-          done < <(find "$APP_BUNDLE_PATH" -type f -print0 | xargs -0 file | grep "Mach-O" | cut -d: -f1)
+          while IFS= read -r -d '' file; do
+              if file "$file" | grep -q "Mach-O"; then
+                  files_to_process+=("$file")
+              fi
+          done < <(find "$APP_BUNDLE_PATH" -type f -print0)
 
           processed_files=()
 
@@ -158,7 +159,6 @@ jobs:
 
             for original_dep_path in $dependencies; do
               dep_name=$(basename "$original_dep_path")
-              # Skip self-references
               if [[ "$dep_name" == "$(basename "$file_to_process")" ]]; then continue; fi
 
               real_path=$(find "$HOMEBREW_PREFIX" -name "$dep_name" -type f -print -quit)
@@ -179,19 +179,23 @@ jobs:
                   install_name_tool -change "$original_dep_path" "$new_ref" "$file_to_process"
                 fi
               else
-                echo "::warning::Could not find dependency '$dep_name' anywhere in '$HOMEBREW_PREFIX'. It might be a system lib or is missing."
+                echo "::warning::Could not find '$dep_name' in '$HOMEBREW_PREFIX'. Assuming it's a framework or already handled."
               fi
             done
           done
           echo "--- Audit Complete. ---"
           
+          # Final Verification Report
           echo "--- FINAL VERIFICATION REPORT ---"
-          find "$APP_BUNDLE_PATH" -type f -print0 | xargs -0 file | grep "Mach-O" | cut -d: -f1 | while read -r file; do
+          while IFS= read -r -d '' file; do
+            if file "$file" | grep -q "Mach-O"; then
               echo "--- Dependencies for $(basename "$file") ---"
               otool -L "$file"
-          done
+            fi
+          done < <(find "$APP_BUNDLE_PATH" -type f -print0)
 
           # Signing and Packaging
+          mkdir -p dist
           echo "Applying final ad-hoc signature..."
           codesign --force --deep --options=runtime -s - "$APP_BUNDLE_PATH"
 
@@ -199,6 +203,7 @@ jobs:
           DMG_FILENAME="Citron-macOS-nightly-${{ steps.version.outputs.VERSION }}.dmg"
           hdiutil create -fs HFS+ -srcfolder "$APP_BUNDLE_PATH" -volname "Citron Nightly" "./$DMG_FILENAME"
           mv "$DMG_FILENAME" ./dist/
+
       - name: Upload macOS Build
         uses: actions/upload-artifact@v4
         with:
