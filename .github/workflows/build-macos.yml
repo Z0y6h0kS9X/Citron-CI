@@ -91,7 +91,6 @@ jobs:
       - name: Configure CMake
         working-directory: ./citron
         run: |
-          # We are NOT forcing static linking. This ensures the build completes as designed.
           OPENAL_DIR="$(brew --prefix openal-soft)"
           BREW_PREFIX="$(brew --prefix)"
           cmake -B build -S . -G "Ninja" \
@@ -166,25 +165,31 @@ jobs:
           done
           echo "--- All dependency paths rewritten. ---"
           
-          # Step 4: Perform a robust, manual, inside-out ad-hoc signing process.
+          # Step 4: Sign all binaries from the inside out.
           echo "--- Applying ad-hoc signatures ---"
           ENTITLEMENTS_PATH="entitlements.plist"
           echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict/></plist>' > "$ENTITLEMENTS_PATH"
-
+          
           echo "Removing all existing signatures..."
           find "$APP_BUNDLE_PATH" -type f -print0 | while IFS= read -r -d '' file; do if file "$file" | grep -q "Mach-O"; then codesign --remove-signature "$file" 2>/dev/null || true; fi; done
-          
-          echo "Signing frameworks and libraries..."
-          find "$APP_BUNDLE_PATH/Contents/Frameworks" -depth -type f \( -name "*.dylib" -o -name "*.framework" \) -exec codesign --force --options=runtime --entitlements "$ENTITLEMENTS_PATH" -s - {} \;
 
-          echo "Signing plugins..."
-          find "$APP_BUNDLE_PATH/Contents/PlugIns" -depth -type f -name "*.dylib" -exec codesign --force --options=runtime --entitlements "$ENTITLEMENTS_PATH" -s - {} \;
+          echo "Signing all component binaries (frameworks, plugins, etc.)..."
+          # Use find -depth to ensure we sign contents before containers.
+          # The loop now correctly identifies all Mach-O files, not just .dylibs.
+          find "$APP_BUNDLE_PATH/Contents" -depth -print0 | while IFS= read -r -d '' file; do
+            if [ -f "$file" ] && file "$file" | grep -q "Mach-O"; then
+              if [[ "$file" != *"/MacOS/citron"* ]]; then # Don't sign the main executable yet
+                echo "Signing component: $(basename "$file")"
+                codesign --force --options=runtime --entitlements "$ENTITLEMENTS_PATH" -s - "$file"
+              fi
+            fi
+          done
 
           echo "Signing main executable..."
           codesign --force --options=runtime --entitlements "$ENTITLEMENTS_PATH" -s - "$APP_BUNDLE_PATH/Contents/MacOS/citron"
 
           echo "Signing the application bundle to seal it..."
-          codesign --force --deep --options=runtime --entitlements "$ENTITLEMENTS_PATH" -s - "$APP_BUNDLE_PATH"
+          codesign --force --options=runtime --entitlements "$ENTITLEMENTS_PATH" -s - "$APP_BUNDLE_PATH"
           
           # Step 5: Final Verification.
           echo "--- Verifying final signature ---"
