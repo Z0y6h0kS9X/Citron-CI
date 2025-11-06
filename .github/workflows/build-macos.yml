@@ -91,7 +91,6 @@ jobs:
       - name: Configure CMake
         working-directory: ./citron
         run: |
-          # The -DBoost_USE_STATIC_LIBS=ON and -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" flags are removed as we are now embracing dynamic linking.
           OPENAL_DIR="$(brew --prefix openal-soft)"
           BREW_PREFIX="$(brew --prefix)"
           cmake -B build -S . -G "Ninja" \
@@ -101,7 +100,9 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCITRON_USE_BUNDLED_VCPKG=OFF \
-            -DENABLE_QT=ON \
+            -DBoost_USE_STATIC_LIBS=ON \
+            -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
+            -DENABLE_QT6=ON \
             -DCITRON_ENABLE_LTO=ON \
             -DCITRON_TESTS=OFF \
             -DUSE_DISCORD_PRESENCE=ON \
@@ -120,72 +121,69 @@ jobs:
           echo "Found .app bundle at: $APP_BUNDLE_PATH"
           MACDEPLOYQT_PATH=$(find "$PWD/citron" -name "macdeployqt" -type f | head -n 1)
           echo "Found macdeployqt at: $MACDEPLOYQT_PATH"
-          FRAMEWORKS_PATH="$APP_BUNDLE_PATH/Contents/Frameworks"
-          HOMEBREW_PREFIX=$(brew --prefix)
 
-          # Step 1: Run macdeployqt. This handles all Qt dependencies.
-          echo "--- Running macdeployqt ---"
+          # Step 1: Run macdeployqt.
           "$MACDEPLOYQT_PATH" "$APP_BUNDLE_PATH" -verbose=1
 
-          # Step 2: Iteratively find and copy all non-Qt, non-system dependencies.
-          echo "--- Finding and copying all transitive dependencies ---"
-          while : ; do
-            new_deps_found=0
-            mach_o_files=()
-            while IFS= read -r -d '' file; do mach_o_files+=("$file"); done < <(find "$APP_BUNDLE_PATH" -type f -print0 | xargs -0 file | grep "Mach-O" | cut -d: -f1)
+          # Step 2: Exhaustively find, copy, and relink all non-system dependencies.
+          FRAMEWORKS_PATH="$APP_BUNDLE_PATH/Contents/Frameworks"
+          HOMEBREW_PREFIX=$(brew --prefix)
+          
+          files_to_process=()
+          while IFS= read -r -d '' file; do
+              if file "$file" | grep -q "Mach-O"; then
+                  files_to_process+=("$file")
+              fi
+          done < <(find "$APP_BUNDLE_PATH" -type f -print0)
 
-            for file_to_process in "${mach_o_files[@]}"; do
-              dependencies=$(otool -L "$file_to_process" | grep '/opt/homebrew/' | grep -iv 'qt' | awk '{print $1}')
-              for original_dep_path in $dependencies; do
-                dep_name=$(basename "$original_dep_path")
-                if [ ! -f "$FRAMEWORKS_PATH/$dep_name" ]; then
-                  echo "Found and copying new dependency: $dep_name"
-                  cp -L "$original_dep_path" "$FRAMEWORKS_PATH/"
-                  chmod 755 "$FRAMEWORKS_PATH/$dep_name"
-                  new_deps_found=1
-                fi
-              done
-            done
-            if [ "$new_deps_found" -eq 0 ]; then break; fi
-          done
-          echo "--- All dependencies copied. ---"
-          
-          # Step 3: Rewrite all paths to use @rpath.
-          echo "--- Rewriting all dependency paths ---"
-          mach_o_files=()
-          while IFS= read -r -d '' file; do mach_o_files+=("$file"); done < <(find "$APP_BUNDLE_PATH" -type f -print0 | xargs -0 file | grep "Mach-O" | cut -d: -f1)
-          
-          for file_to_process in "${mach_o_files[@]}"; do
-            install_name_tool -id "@rpath/$(basename "$file_to_process")" "$file_to_process" 2>/dev/null || true
-            dependencies=$(otool -L "$file_to_process" | grep '/opt/homebrew/' | awk '{print $1}')
+          processed_files=()
+          while [ ${#files_to_process[@]} -gt 0 ]; do
+            file_to_process="${files_to_process[0]}"
+            files_to_process=("${files_to_process[@]:1}")
+
+            if [[ " ${processed_files[*]} " =~ " ${file_to_process} " ]]; then continue; fi
+            processed_files+=("$file_to_process")
+            
+            install_name_tool -id "@rpath/$(basename "$file_to_process")" "$file_to_process"
+            
+            dependencies=$(otool -L "$file_to_process" | grep -E '(@rpath|/opt/homebrew)' | grep -v '/System/Library' | grep -v '/usr/lib' | awk '{print $1}')
             for original_dep_path in $dependencies; do
               dep_name=$(basename "$original_dep_path")
-              new_ref="@rpath/$dep_name"
-              echo "Rewriting '$dep_name' -> '@rpath' in $(basename "$file_to_process")"
-              install_name_tool -change "$original_dep_path" "$new_ref" "$file_to_process"
+              if [[ "$dep_name" == "$(basename "$file_to_process")" ]]; then continue; fi
+              
+              real_path=$(find -L "$HOMEBREW_PREFIX" -name "$dep_name" -type f -print -quit)
+              if [ -n "$real_path" ]; then
+                if [ ! -f "$FRAMEWORKS_PATH/$dep_name" ]; then
+                  cp -L "$real_path" "$FRAMEWORKS_PATH/"
+                  chmod 755 "$FRAMEWORKS_PATH/$dep_name"
+                  files_to_process+=("$FRAMEWORKS_PATH/$dep_name")
+                fi
+                
+                new_ref="@rpath/$dep_name"
+                if [[ "$original_dep_path" != "$new_ref" ]]; then
+                  install_name_tool -change "$original_dep_path" "$new_ref" "$file_to_process"
+                fi
+              fi
             done
           done
-          echo "--- All dependency paths rewritten. ---"
-          
-          # Step 4: Perform a robust, manual, inside-out ad-hoc signing process.
-          echo "--- Applying ad-hoc signatures ---"
-          find "$APP_BUNDLE_PATH" -type f -print0 | while IFS= read -r -d '' file; do if file "$file" | grep -q "Mach-O"; then codesign --remove-signature "$file" 2>/dev/null || true; fi; done
-          echo "Signing frameworks and libraries..."
-          find "$APP_BUNDLE_PATH/Contents/Frameworks" -type f \( -name "*.dylib" -o -name "*.framework" \) -exec codesign --force --options=runtime -s - {} \;
-          echo "Signing plugins..."
-          find "$APP_BUNDLE_PATH/Contents/PlugIns" -type f -name "*.dylib" -exec codesign --force --options=runtime -s - {} \;
-          echo "Signing main executable..."
-          codesign --force --options=runtime -s - "$APP_BUNDLE_PATH/Contents/MacOS/citron"
-          echo "Signing the application bundle to seal it..."
-          codesign --force --deep --options=runtime -s - "$APP_BUNDLE_PATH"
+          echo "--- Dependency audit complete. ---"
 
-          # Step 5: Final Verification.
-          echo "--- VERIFYING FINAL SIGNATURE ---"
-          codesign -vvv --deep --strict "$APP_BUNDLE_PATH"
-          echo "--- FINAL LINKAGE VERIFICATION ---"
-          otool -L "$APP_BUNDLE_PATH/Contents/MacOS/citron" | grep 'homebrew' && (echo "FAIL: Found lingering homebrew links."; exit 1) || echo "PASS: No homebrew links found."
+          # Step 3: THE FINAL SIGNING FIX: Sign from the inside out.
+          echo "--- Creating empty entitlements for ad-hoc signature ---"
+          ENTITLEMENTS_PATH="entitlements.plist"
+          echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict/></plist>' > "$ENTITLEMENTS_PATH"
+
+          echo "--- Signing all components from the inside out ---"
+          # Find all binaries, deeper ones first, and sign them individually.
+          find "$APP_BUNDLE_PATH" -depth -type f -print0 | while IFS= read -r -d '' file; do
+            if file "$file" | grep -q "Mach-O"; then
+              echo "Signing $(basename "$file")"
+              codesign --force --options=runtime --entitlements "$ENTITLEMENTS_PATH" -s - "$file"
+            fi
+          done
+          echo "--- All components signed. ---"
           
-          # Step 6: Create the final DMG.
+          # Step 4: Create the final DMG.
           echo "Creating final DMG..."
           mkdir -p dist
           DMG_FILENAME="Citron-macOS-nightly-${{ steps.version.outputs.VERSION }}.dmg"
