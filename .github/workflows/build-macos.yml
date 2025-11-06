@@ -199,7 +199,9 @@ jobs:
           echo "--- Allowing file system to settle before creating DMG ---"
           sleep 5
           echo "Creating final DMG..."
-          hdiutil create -fs HFS+ -srcfolder "$APP_BUNDLE_PATH" -volname "Citron Nightly" "./dist/Citron-macOS-nightly-${{ steps.version.outputs.VERSION }}.dmg"
+          mkdir -p dist
+          DMG_FILENAME="Citron-macOS-nightly-${{ steps.version.outputs.VERSION }}.dmg"
+          hdiutil create -fs HFS+ -srcfolder "$APP_BUNDLE_PATH" -volname "Citron Nightly" "./dist/$DMG_FILENAME"
 
       - name: Upload macOS Build
         uses: actions/upload-artifact@v4
