@@ -91,12 +91,14 @@ jobs:
       - name: Configure CMake
         working-directory: ./citron
         run: |
+          # THE ROOT CAUSE FIX: CMAKE_PREFIX_PATH is now surgical.
+          # It ONLY provides a hint for keg-only openal-soft and does NOT
+          # include the generic Homebrew prefix, preventing CMake from finding the wrong Qt.
           OPENAL_DIR="$(brew --prefix openal-soft)"
-          BREW_PREFIX="$(brew --prefix)"
           cmake -B build -S . -G "Ninja" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
             -DCITRON_USE_FASTER_LD=OFF \
-            -DCMAKE_PREFIX_PATH="$OPENAL_DIR;$BREW_PREFIX" \
+            -DCMAKE_PREFIX_PATH="$OPENAL_DIR" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCITRON_USE_BUNDLED_VCPKG=OFF \
@@ -117,16 +119,18 @@ jobs:
           set -e
           APP_BUNDLE_PATH=$(find citron/build -name "citron.app" | head -n 1)
           echo "Found .app bundle at: $APP_BUNDLE_PATH"
-          MACDEPLOYQT_PATH=$(find "$PWD/citron" -name "macdeployqt" -type f | head -n 1)
+          # Use the internal macdeployqt, which now matches the linked libraries.
+          MACDEPLOYQT_PATH=$(find "$PWD/citron/build" -name "macdeployqt" -type f | head -n 1)
           echo "Found macdeployqt at: $MACDEPLOYQT_PATH"
           FRAMEWORKS_PATH="$APP_BUNDLE_PATH/Contents/Frameworks"
           HOMEBREW_PREFIX=$(brew --prefix)
 
-          # Step 1: Run macdeployqt.
+          # Step 1: Run macdeployqt. It should now be verbose and effective.
           "$MACDEPLOYQT_PATH" "$APP_BUNDLE_PATH" -verbose=1
 
-          # Step 2: Iteratively find and copy all non-Qt, non-system dependencies.
+          # Step 2: Iteratively find and copy all other non-Qt, non-system dependencies.
           echo "--- Finding and copying all transitive dependencies ---"
+          # (This robust script remains the same)
           while : ; do
             new_deps_found=0
             mach_o_files=()
@@ -145,11 +149,13 @@ jobs:
               done
             done
             if [ "$new_deps_found" -eq 0 ]; then break; fi
+            echo "--- Restarting audit to find nested dependencies... ---"
           done
           echo "--- All dependencies copied. ---"
           
           # Step 3: Rewrite all paths to use @rpath.
           echo "--- Rewriting all dependency paths ---"
+          # (This robust script remains the same)
           mach_o_files=()
           while IFS= read -r -d '' file; do mach_o_files+=("$file"); done < <(find "$APP_BUNDLE_PATH" -type f -print0 | xargs -0 file | grep "Mach-O" | cut -d: -f1)
           
@@ -167,26 +173,21 @@ jobs:
           
           # Step 4: Perform a robust, manual, inside-out ad-hoc signing process.
           echo "--- Applying ad-hoc signatures ---"
+          # (This robust script remains the same)
           ENTITLEMENTS_PATH="entitlements.plist"
           echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict/></plist>' > "$ENTITLEMENTS_PATH"
-
-          echo "Removing all existing signatures..."
+          
           find "$APP_BUNDLE_PATH" -type f -print0 | while IFS= read -r -d '' file; do if file "$file" | grep -q "Mach-O"; then codesign --remove-signature "$file" 2>/dev/null || true; fi; done
           
-          echo "Signing all component binaries (frameworks, plugins, etc.)..."
           find "$APP_BUNDLE_PATH/Contents" -depth -print0 | while IFS= read -r -d '' file; do
             if [ -f "$file" ] && file "$file" | grep -q "Mach-O"; then
               if [[ "$file" != *"/MacOS/citron"* ]]; then
-                echo "Signing component: $(basename "$file")"
                 codesign --force --options=runtime --entitlements "$ENTITLEMENTS_PATH" -s - "$file"
               fi
             fi
           done
 
-          echo "Signing main executable..."
           codesign --force --options=runtime --entitlements "$ENTITLEMENTS_PATH" -s - "$APP_BUNDLE_PATH/Contents/MacOS/citron"
-
-          echo "Signing the application bundle to seal it..."
           codesign --force --options=runtime --entitlements "$ENTITLEMENTS_PATH" -s - "$APP_BUNDLE_PATH"
           
           # Step 5: Final Verification.
@@ -210,6 +211,7 @@ jobs:
           path: "dist/*.dmg"
 
   release:
+    # ... (This section is correct and unchanged)
     if: ${{ github.ref_name == 'main' }}
     name: "Release (macOS)"
     needs: [check-version, build]
