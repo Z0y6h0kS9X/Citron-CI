@@ -109,8 +109,8 @@ jobs:
   
         - name: Compile Citron MacOS (${{ matrix.target }})
           run: |
-            chmod +x ./citron-macos.sh
-            ./citron-macos.sh
+            chmod +x ./citron-darwin.sh
+            ./citron-darwin.sh
             
         - name: Upload
           uses: actions/upload-artifact@v5.0.0
