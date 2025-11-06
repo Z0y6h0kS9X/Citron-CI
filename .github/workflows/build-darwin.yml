@@ -1,0 +1,126 @@
+name: "Build Darwin"
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_to_run:
+        type: choice
+        description: 'Choose target build platform'
+        options:
+          - all
+          - windows
+          - appimage
+          - macos
+          - android
+          - bsd
+          - info
+        default: 'all'
+
+jobs:
+  info:
+    if: github.event.inputs.job_to_run == 'all' || github.event.inputs.job_to_run == 'info'
+    runs-on: ubuntu-latest
+    name: "Get info"
+    strategy:
+      matrix:
+        target: [Info]
+    steps:
+      - uses: actions/checkout@v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Get the latest release count
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: |
+          api_url="https://api.github.com/repos/${{ github.repository }}"
+          latest_release_info=$(curl -H "Authorization: token $GH_TOKEN" "$api_url/releases/latest")
+          last_release_tag=$(echo "$latest_release_info" | jq -r '.tag_name')
+          echo "${last_release_tag}"
+          old_count="${last_release_tag##*-}"
+          echo "OLD_COUNT=$old_count" >> "$GITHUB_ENV"
+          
+      - name: Generate changelog
+        run: |
+          chmod +x ./changelog.sh
+          ./changelog.sh
+          
+      - name: Upload tag file
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: tag
+          path: ~/tag
+
+      - name: Upload count file
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: count
+          path: ~/count
+
+      - name: Upload changelog file
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: changelog
+          path: ~/changelog
+
+      - name: Upload source code
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: source
+          path: artifacts
+
+  macos:
+      if: github.event.inputs.job_to_run == 'all' || github.event.inputs.job_to_run == 'macos'
+      runs-on: macos-latest
+      name: "MacOS (${{ matrix.target }})"
+      strategy:
+        matrix:
+          target: [arm64]
+      env:
+        TARGET: ${{ matrix.target }}
+        CCACHE_DIR: ${{ github.workspace }}/.ccache
+        CCACHE_COMPILERCHECK: content
+        CCACHE_SLOPPINESS: time_macros
+      steps:
+        - uses: actions/checkout@v5
+  
+        - name: Clone Citron
+          run: |
+            git clone 'https://git.citron-emu.org/Citron/Emulator.git' ./citron
+            
+        - name: Restore ccache for ${{ matrix.target }}
+          uses: actions/cache/restore@v4
+          id: restore-ccache-cache
+          with:
+            path: ${{ env.CCACHE_DIR }}
+            key: ${{ runner.os }}-${{ matrix.target }}-ccache-${{ github.run_id }}
+            restore-keys: |
+              ${{ runner.os }}-${{ matrix.target }}-ccache-
+              
+        - name: Install dependencies
+          run: |
+            brew install --formula --quiet autoconf automake boost ccache glslang hidapi libiconv libtool nasm speexdsp vulkan-loader vulkan-headers vulkan-utility-libraries molten-vk
+        
+        - name: Install Qt
+          uses: jurplel/install-qt-action@v4
+          with:
+            version: 6.7.3
+            cache: 'true'
+  
+        - name: Compile Citron MacOS (${{ matrix.target }})
+          run: |
+            chmod +x ./citron-macos.sh
+            ./citron-macos.sh
+            
+        - name: Upload
+          uses: actions/upload-artifact@v5.0.0
+          with:
+            name: citron-macos-${{ matrix.target }}
+            path: citron/build/artifacts/
+  
+        - name: Save ccache for ${{ matrix.target }}
+          if: ${{ github.ref_name == 'main' }}
+          uses: actions/cache/save@v4
+          with:
+            path: ${{ env.CCACHE_DIR }}
+            key: ${{ steps.restore-ccache-cache.outputs.cache-primary-key }}
